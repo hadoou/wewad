@@ -1,139 +1,116 @@
 /**
- * Database Module - SQLite with better-sqlite3
+ * Database Module - PostgreSQL
  * Cynex Client API
  */
 
-const Database = require('better-sqlite3');
-const path = require('path');
+const { Pool } = require('pg');
+require('dotenv').config();
 
-const db = new Database(path.join(__dirname, 'cynex.db'));
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+});
 
-// Initialize tables
-function initDatabase() {
-    // Users table
-    db.exec(`
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            email TEXT,
-            password TEXT NOT NULL,
-            role TEXT DEFAULT 'USER',
-            hwid TEXT,
-            avatar TEXT,
-            telegram TEXT,
-            banned INTEGER DEFAULT 0,
-            free_resets INTEGER DEFAULT 0,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    `);
-
-    // License keys table
-    db.exec(`
-        CREATE TABLE IF NOT EXISTS keys (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            key TEXT UNIQUE NOT NULL,
-            days INTEGER DEFAULT 30,
-            activations INTEGER DEFAULT 1,
-            used_activations INTEGER DEFAULT 0,
-            status TEXT DEFAULT 'NONE',
-            owner_id INTEGER,
-            hwid TEXT,
-            expires_at DATETIME,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (owner_id) REFERENCES users(id)
-        )
-    `);
-
-    // HWID reset tokens table
-    db.exec(`
-        CREATE TABLE IF NOT EXISTS hwid_tokens (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            token TEXT UNIQUE NOT NULL,
-            used INTEGER DEFAULT 0,
-            used_by INTEGER,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (used_by) REFERENCES users(id)
-        )
-    `);
-
-    // Promo codes table
-    db.exec(`
-        CREATE TABLE IF NOT EXISTS promos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            code TEXT UNIQUE NOT NULL,
-            discount INTEGER DEFAULT 0,
-            activations INTEGER DEFAULT 1,
-            used_activations INTEGER DEFAULT 0,
-            author TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    `);
-
-    // Products table
-    db.exec(`
-        CREATE TABLE IF NOT EXISTS products (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            description TEXT,
-            price_usd REAL,
-            price_rub REAL,
-            days INTEGER,
-            activations INTEGER DEFAULT 1,
-            active INTEGER DEFAULT 1,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    `);
-
-    // Payments table
-    db.exec(`
-        CREATE TABLE IF NOT EXISTS payments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            product_id INTEGER,
-            amount REAL,
-            currency TEXT,
-            status TEXT DEFAULT 'pending',
-            payment_id TEXT,
-            promo_id INTEGER,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(id),
-            FOREIGN KEY (product_id) REFERENCES products(id)
-        )
-    `);
-
-    // Server settings table
-    db.exec(`
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
-    `);
-
-    // Create default admin if not exists
-    const adminExists = db.prepare('SELECT id FROM users WHERE role = ?').get('ADMIN');
-    if (!adminExists) {
-        const bcrypt = require('bcryptjs');
-        const hashedPassword = bcrypt.hashSync('admin123', 10);
-        db.prepare(`
-            INSERT INTO users (username, email, password, role)
-            VALUES (?, ?, ?, ?)
-        `).run('admin', 'admin@cynex.local', hashedPassword, 'ADMIN');
-        console.log('✅ Default admin created: admin / admin123');
-    }
-
-    // Insert default settings
-    const defaultSettings = [
-        ['maintenance', 'false'],
-        ['mode', 'normal']
-    ];
-    
-    const insertSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
-    for (const [key, value] of defaultSettings) {
-        insertSetting.run(key, value);
-    }
-
-    console.log('✅ Database initialized');
+// Query helper
+async function query(text, params) {
+    const start = Date.now();
+    const res = await pool.query(text, params);
+    return res;
 }
 
-module.exports = { db, initDatabase };
+// Initialize tables
+async function initDatabase() {
+    try {
+        // Users table
+        await query(`
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                username VARCHAR(50) UNIQUE NOT NULL,
+                email VARCHAR(100),
+                password VARCHAR(255) NOT NULL,
+                role VARCHAR(20) DEFAULT 'USER',
+                hwid VARCHAR(255),
+                avatar VARCHAR(255),
+                telegram VARCHAR(100),
+                banned BOOLEAN DEFAULT false,
+                free_resets INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        // License keys table
+        await query(`
+            CREATE TABLE IF NOT EXISTS keys (
+                id SERIAL PRIMARY KEY,
+                key VARCHAR(50) UNIQUE NOT NULL,
+                days INTEGER DEFAULT 30,
+                activations INTEGER DEFAULT 1,
+                used_activations INTEGER DEFAULT 0,
+                status VARCHAR(20) DEFAULT 'NONE',
+                owner_id INTEGER REFERENCES users(id),
+                hwid VARCHAR(255),
+                expires_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        // HWID reset tokens table
+        await query(`
+            CREATE TABLE IF NOT EXISTS hwid_tokens (
+                id SERIAL PRIMARY KEY,
+                token VARCHAR(255) UNIQUE NOT NULL,
+                used BOOLEAN DEFAULT false,
+                used_by INTEGER REFERENCES users(id),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        // Promo codes table
+        await query(`
+            CREATE TABLE IF NOT EXISTS promos (
+                id SERIAL PRIMARY KEY,
+                code VARCHAR(50) UNIQUE NOT NULL,
+                discount INTEGER DEFAULT 0,
+                activations INTEGER DEFAULT 1,
+                used_activations INTEGER DEFAULT 0,
+                author VARCHAR(50),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        // Products table
+        await query(`
+            CREATE TABLE IF NOT EXISTS products (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(100) NOT NULL,
+                description TEXT,
+                price_usd DECIMAL(10,2),
+                price_rub DECIMAL(10,2),
+                days INTEGER,
+                activations INTEGER DEFAULT 1,
+                active BOOLEAN DEFAULT true,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        // Create default admin if not exists
+        const bcrypt = require('bcryptjs');
+        const adminCheck = await query('SELECT id FROM users WHERE role = $1', ['ADMIN']);
+        
+        if (adminCheck.rows.length === 0) {
+            const hashedPassword = bcrypt.hashSync('admin123', 10);
+            await query(`
+                INSERT INTO users (username, email, password, role)
+                VALUES ($1, $2, $3, $4)
+            `, ['admin', 'admin@cynex.local', hashedPassword, 'ADMIN']);
+            console.log('✅ Default admin created: admin / admin123');
+        }
+
+        console.log('✅ Database initialized');
+    } catch (error) {
+        console.error('Database init error:', error);
+    }
+}
+
+module.exports = { query, initDatabase, pool };
