@@ -1,11 +1,11 @@
 /**
  * Auth Routes - Login, Register, Logout
- * Cynex Client API
+ * Cynex Client API (PostgreSQL)
  */
 
 const express = require('express');
 const bcrypt = require('bcryptjs');
-const { db } = require('../database');
+const { query } = require('../database');
 const { generateAccessToken, generateRefreshToken, authMiddleware, verifyRefreshToken } = require('../auth');
 
 const router = express.Router();
@@ -27,20 +27,20 @@ router.post('/register', async (req, res) => {
             return res.status(400).json({ error: 'Пароль минимум 6 символов' });
         }
 
-        // Check if exists
-        const existing = db.prepare('SELECT id FROM users WHERE username = ?').get(username);
-        if (existing) {
+        const existing = await query('SELECT id FROM users WHERE username = $1', [username]);
+        if (existing.rows.length > 0) {
             return res.status(400).json({ error: 'Пользователь уже существует' });
         }
 
         const hashedPassword = await bcrypt.hash(password, 10);
 
-        const result = db.prepare(`
+        const result = await query(`
             INSERT INTO users (username, email, password, role)
-            VALUES (?, ?, ?, 'USER')
-        `).run(username, email || null, hashedPassword);
+            VALUES ($1, $2, $3, 'USER')
+            RETURNING id, username, email, role, created_at
+        `, [username, email || null, hashedPassword]);
 
-        const user = db.prepare('SELECT id, username, email, role, created_at FROM users WHERE id = ?').get(result.lastInsertRowid);
+        const user = result.rows[0];
 
         const accessToken = generateAccessToken(user);
         const refreshToken = generateRefreshToken(user);
@@ -66,7 +66,8 @@ router.post('/login', async (req, res) => {
             return res.status(400).json({ error: 'Введите имя пользователя и пароль' });
         }
 
-        const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+        const result = await query('SELECT * FROM users WHERE username = $1', [username]);
+        const user = result.rows[0];
         
         if (!user) {
             return res.status(401).json({ error: 'Неверные данные' });
@@ -107,7 +108,7 @@ router.post('/logout', (req, res) => {
 });
 
 // Refresh token
-router.post('/refresh', (req, res) => {
+router.post('/refresh', async (req, res) => {
     try {
         const { refreshToken } = req.body;
 
@@ -120,7 +121,9 @@ router.post('/refresh', (req, res) => {
             return res.status(401).json({ error: 'Недействительный токен' });
         }
 
-        const user = db.prepare('SELECT * FROM users WHERE id = ?').get(decoded.id);
+        const result = await query('SELECT * FROM users WHERE id = $1', [decoded.id]);
+        const user = result.rows[0];
+        
         if (!user || user.banned) {
             return res.status(401).json({ error: 'Пользователь не найден' });
         }
@@ -138,22 +141,22 @@ router.post('/refresh', (req, res) => {
 });
 
 // Get current user
-router.get('/me', authMiddleware, (req, res) => {
+router.get('/me', authMiddleware, async (req, res) => {
     try {
-        const user = db.prepare(`
+        const result = await query(`
             SELECT u.id, u.username, u.email, u.role, u.hwid, u.telegram, u.avatar,
                    u.banned, u.free_resets, u.created_at,
-                   k.key as license_key, k.status as keyStatus, k.expires_at as expiresAt
+                   k.key as license_key, k.status as "keyStatus", k.expires_at as "expiresAt"
             FROM users u
             LEFT JOIN keys k ON k.owner_id = u.id AND k.status = 'ACTIVE'
-            WHERE u.id = ?
-        `).get(req.user.id);
+            WHERE u.id = $1
+        `, [req.user.id]);
 
-        if (!user) {
+        if (result.rows.length === 0) {
             return res.status(404).json({ error: 'Пользователь не найден' });
         }
 
-        res.json(user);
+        res.json(result.rows[0]);
     } catch (error) {
         res.status(500).json({ error: 'Ошибка получения данных' });
     }
